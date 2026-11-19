@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bpx-mpc"
+version = "0.1.0"
+description = "BPX 四足机器人 MuJoCo 凸 MPC 与全身动力学控制教学工程"
+requires-python = ">=3.11"
+dependencies = ["mujoco==3.13.0", "numpy>=2,<3", "scipy>=1.14,<2", "osqp>=1,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+bpx-mpc = "bpx_mpc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+[tool.setuptools.package-data]
+bpx_mpc = ["data/default.toml", "data/bpx/bpx.xml", "data/bpx/LICENSE", "data/bpx/meshes/*.obj"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

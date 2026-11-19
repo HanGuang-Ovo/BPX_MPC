@@ -1,0 +1,61 @@
+# 单位统一使用 SI；三轴速度指令在机体系中定义，顺序 vx、vy、wz。
+[simulation]
+timestep = 0.002
+control_dt = 0.004
+log_dt = 0.02
+
+[robot]
+body_height = 0.40
+foot_radius = 0.027
+friction = 0.6
+torque_limit = 30.0
+# 每条腿 roll、pitch、knee；腿顺序 FL、FR、HL、HR。与旧 RL 的顺序不同。
+standing_angles = [0.0, 0.70, -1.40]
+lying_angles = [0.0, 0.98, -2.62]
+lying_height = 0.133
+
+[init]
+duration = 4.0
+support_duration = 1.0
+support_depth = 0.19
+standing_depth = 0.36
+kp = 80.0
+kd = 2.0
+timeout = 12.0
+settle_time = 0.5
+blend_time = 0.5
+
+[gait]
+period = 0.60
+duty_factor = 0.60
+swing_height = 0.06
+velocity_feedback = 0.05
+max_step = 0.16
+start_threshold = 0.035
+stop_threshold = 0.015
+command_slew = [0.5, 0.4, 0.8]
+command_limit = [0.4, 0.25, 0.7]
+
+[mpc]
+dt = 0.04
+horizon = 12
+# 状态：[roll,pitch,yaw, COM x,y,z, 世界角速度 xyz, 世界线速度 xyz]
+state_weights = [100.0, 100.0, 30.0, 8.0, 8.0, 150.0, 2.0, 2.0, 4.0, 20.0, 20.0, 8.0]
+force_weight = 0.0001
+max_normal_force = 180.0
+
+[wbc]
+# 加权全身逆动力学 QP：任务是软目标，动力学/力矩限幅是约束。
+body_kp = [40.0, 40.0, 100.0]
+body_kd = [12.0, 12.0, 20.0]
+orientation_kp = [100.0, 100.0, 60.0]
+orientation_kd = [20.0, 20.0, 12.0]
+swing_kp = 300.0
+swing_kd = 30.0
+stance_kp = 100.0
+stance_kd = 20.0
+body_weight = 10.0
+orientation_weight = 10.0
+swing_weight = 2.0
+force_weight = 0.02
+posture_weight = 0.001
