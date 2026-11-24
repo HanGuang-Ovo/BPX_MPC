@@ -4,17 +4,19 @@
 硬约束：M dv + h = S.T tau + J.T f；支撑脚加速度约束；
 摩擦棱锥；摆腿接触力为零；关节力矩/预测速度/预测关节位置限制。
 软目标：机身姿态/位置、摆动足轨迹、MPC 接触力、关节姿态正则。
+首次求解失败时，仅将支撑脚加速度约束改为加权目标后重试。
 """
 import numpy as np
 from scipy import sparse
 from .math_utils import orientation_error, yaw_rotation
-from .qp import QPSolver, force_constraints
+from .qp import QPFailure, QPSolver, force_constraints
 
 
 class WholeBodyController:
     def __init__(self, cfg, robot):
         self.cfg, self.robot = cfg, robot
         self.qp = QPSolver("WBC")
+        self.stance_retries = 0
         self.force = np.zeros((4, 3))
         self.acceleration = np.zeros(18)
 
@@ -41,10 +43,10 @@ class WholeBodyController:
         desired = np.asarray(c["orientation_kp"])*orientation_error(yaw_rotation(yaw_ref), state.rotation)
         desired += np.asarray(c["orientation_kd"])*([0., 0., yaw_rate]-state.omega)
         task(T, desired-angular_bias, c["orientation_weight"])
-        equality = [np.hstack([M, -jac.reshape(12, 18).T, np.zeros((18, 12))])]
+        dynamics = np.hstack([M, -jac.reshape(12, 18).T, np.zeros((18, 12))])
         # S 从广义速度中选择受控关节，基座对应的 6 行没有电机力矩。
-        equality[0][robot.vadr, 30+np.arange(12)] = -1.
-        rhs = [-h]
+        dynamics[robot.vadr, 30+np.arange(12)] = -1.
+        stance = []
         for leg in range(4):
             T = np.zeros((3, 42))
             T[:, :18] = jac[leg]
@@ -52,8 +54,7 @@ class WholeBodyController:
                 # 位置/速度反馈抑制有限精度和 MuJoCo 软接触带来的漂移。
                 value = c["stance_kp"]*(targets.position[leg]-state.feet[leg])
                 value -= c["stance_kd"]*state.foot_velocity[leg] + jdotv[leg]
-                equality.append(T)
-                rhs.append(value)
+                stance.append((T, value))
             else:
                 value = targets.acceleration[leg] + c["swing_kp"]*(targets.position[leg]-state.feet[leg])
                 value += c["swing_kd"]*(targets.velocity[leg]-state.foot_velocity[leg])-jdotv[leg]
@@ -77,12 +78,24 @@ class WholeBodyController:
         qrange = robot.model.jnt_range[robot.jids]
         amin = np.maximum((-20.-vel)/dt, 2*(qrange[:, 0]-pos-dt*vel)/dt**2)
         amax = np.minimum((20.-vel)/dt, 2*(qrange[:, 1]-pos-dt*vel)/dt**2)
-        eq = np.vstack(equality)
-        b = np.concatenate(rhs)
-        A = sparse.vstack([sparse.csc_matrix(eq), cone, sparse.csc_matrix(limit)], format="csc")
-        lower = np.r_[b, lo, np.full(12, -robot.torque_limit), amin]
-        upper = np.r_[b, up, np.full(12, robot.torque_limit), amax]
-        z = self.qp.solve(P, q, A, lower, upper)
+        constraints = [cone, sparse.csc_matrix(limit)]
+        lower = np.r_[lo, np.full(12, -robot.torque_limit), amin]
+        upper = np.r_[up, np.full(12, robot.torque_limit), amax]
+        equality = np.vstack([dynamics] + [matrix for matrix, _ in stance])
+        rhs = np.concatenate([-h] + [value for _, value in stance])
+        A = sparse.vstack([sparse.csc_matrix(equality), *constraints], format="csc")
+        try:
+            z = self.qp.solve(P, q, A, np.r_[rhs, lower], np.r_[rhs, upper])
+        except QPFailure:
+            if not stance:
+                raise
+            # 关节限位附近可能无法同时满足所有支撑脚反馈。
+            weight = c.get("stance_weight", 30.)
+            for matrix, value in stance:
+                task(matrix, value, weight)
+            A = sparse.vstack([sparse.csc_matrix(dynamics), *constraints], format="csc")
+            z = self.qp.solve(P, q, A, np.r_[-h, lower], np.r_[-h, upper])
+            self.stance_retries += 1
         self.acceleration = z[:18]
         self.force = z[18:30].reshape(4, 3)
         return z[30:42]

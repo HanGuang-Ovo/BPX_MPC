@@ -4,11 +4,11 @@
 
 ## 快速运行
 
-本机工程目录为 `/home/hanguang/BPX_MPC`。独立的 Conda 环境位于该目录下的 `.conda-env`。进入目录后按路径激活环境即可运行。
+本机工程目录为 `/home/hanguang/BPX_MPC`。进入目录后激活名为 `mojoco` 的 Conda 环境即可运行。
 
 ```bash
 cd ~/BPX_MPC
-conda activate ./.conda-env
+conda activate mojoco
 
 # 无窗口。从趴姿自动起身，6 s 开始前进，11 s 发出停止指令。
 bpx-mpc --duration 15 --vx 0.25 --stop-at 11 --log logs/forward.csv
@@ -20,15 +20,15 @@ bpx-mpc --viewer --gamepad --gamepad-index 0 --gamepad-deadman --duration 120
 bpx-mpc --duration 10 --log logs/stand.csv
 ```
 
-在另一台 Linux 上，进入项目目录后用 [environment.yml](environment.yml) 创建 Conda 环境，再在该环境中安装工程和测试依赖。MuJoCo 锁到本项目验证的 `3.13.0`，其余依赖范围见 [pyproject.toml](pyproject.toml)。
+首次配置时，先安装 Conda（本机使用 Miniforge），再进入项目目录，按 [environment.yml](environment.yml) 创建 `mojoco` 环境并安装工程和测试依赖。MuJoCo 锁到本项目验证的 `3.13.0`，其余依赖范围见 [pyproject.toml](pyproject.toml)。
 
 ```bash
-conda env create --prefix ./.conda-env -f environment.yml
-conda activate ./.conda-env
+conda env create -f environment.yml
+conda activate mojoco
 python -m pip install -e '.[dev]'
 ```
 
-这里使用可编辑安装，修改源码或默认配置后即可直接运行。若终端已经加载 ROS 并出现 `launch_testing` 相关 pytest 导入错误，运行 `env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`。图形模式需要可访问的桌面显示和 OpenGL。无窗口模式可用于远程终端和自动回归。
+这里使用可编辑安装，修改源码或默认配置后即可直接运行。若刚配置 Bash 的 Conda 初始化，重新打开终端后再激活环境。若终端已经加载 ROS 并出现 `launch_testing` 相关 pytest 导入错误，运行 `env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`。图形模式需要可访问的桌面显示和 OpenGL，可运行 `bpx-mpc --viewer --duration 10` 观察自动起身。无窗口模式可用于远程终端和自动回归。
 
 ## 手柄和脚本输入
 
@@ -54,6 +54,18 @@ bpx-mpc --duration 15 --vx -0.22 --stop-at 11 --log logs/reverse.csv
 bpx-mpc --duration 15 --vy 0.16 --stop-at 11 --log logs/lateral.csv
 bpx-mpc --duration 15 --wz 0.45 --stop-at 11 --log logs/turn.csv
 bpx-mpc --duration 15 --vx 0.22 --vy -0.12 --wz -0.35 --stop-at 11 --log logs/mixed.csv
+```
+
+## 无限平地与丘包
+
+使用 `--terrain rough` 在无限延伸的灰色棋盘平地上加入分散的丘包。机器人在原点的平地上起身，沿初始朝向前进约 1 m 会进入第一组丘包，也可以走旁边的平地通道绕行。丘顶比平地高约 11 cm，控制器按地表调整落足和机身高度。跨区时地表高度和 CSV 的世界坐标保持连续。`--terrain flat` 是默认场景，使用同样的无限灰色平地。
+
+```bash
+# 手柄控制并记录 CSV。按 RB 起身，站稳后按住 LB 推杆，关闭窗口结束。
+bpx-mpc --terrain rough --viewer --gamepad --gamepad-index 0 --gamepad-deadman --duration inf --log logs/gamepad-rough.csv
+
+# 无窗口。穿过第一组丘包，在另一侧的平地收步站立。
+bpx-mpc --terrain rough --duration 30 --vx 0.25 --stop-at 26 --log logs/rough.csv
 ```
 
 ## 控制链与状态机
@@ -100,7 +112,7 @@ flowchart LR
 | [qp.py](src/bpx_mpc/qp.py) | OSQP 求解、热启动、约束残差与共享摩擦棱锥。 |
 | [gamepad.py](src/bpx_mpc/gamepad.py) | 从 `BPX_test/bpx_runtime/gamepad.py` 复用的 Linux 手柄输入。 |
 | [data/default.toml](src/bpx_mpc/data/default.toml) | 步长、起身、步态、MPC 权重及 WBC 增益。 |
-| [data/bpx/](src/bpx_mpc/data/bpx/) | 来自 BPX_test 的 MJCF 和网格，模型副本新增 4 个控制参考 site，保留 [资产许可证](src/bpx_mpc/data/bpx/LICENSE)。 |
+| [data/bpx/](src/bpx_mpc/data/bpx/) | 来自 BPX_test 的 MJCF 和网格，模型副本新增 4 个控制参考 site。[rough.xml](src/bpx_mpc/data/bpx/rough.xml) 引用该模型，高度由 [terrain.py](src/bpx_mpc/terrain.py) 按世界坐标生成。保留 [资产许可证](src/bpx_mpc/data/bpx/LICENSE)。 |
 | [MPC 与工程教程](docs/MPC_WBC_TUTORIAL.md) | 从模型和矩阵推导到逐段读代码的学习路线。 |
 
 模型以 `torso` 为浮动基座，关节按 FL、FR、HL、HR 排列，每条腿按髋 roll、髋 pitch、膝关节排列。电机使用 MJCF 的单位传动比，力矩限幅 ±30 N·m。优化中的足端力以世界坐标表示，指地面对机器人的力。摇杆速度先在机体航向坐标定义，再变换到世界坐标。
@@ -111,7 +123,8 @@ flowchart LR
 - 比较 `raw_vx/vy/wz`、`cmd_vx/vy/wz` 与实际 `vx/vy/wz`。摇杆释放后会有可见减速过程。小跑时单帧速度随支撑变化，先对一至数个完整周期取平均。
 - `*_planned_contact` 是调度的接触，`*_actual_fz` 是 MuJoCo 足垫力。初始腿未进入步态时接触标记是 `-1`。换腿附近两条曲线可有短暂时差。
 - `*_mpc_f*`、`*_wbc_f*`、`*_actual_f*` 分别是计划力、全身控制力和实测力。调试时同时看 `tau_*` 是否饱和。终端的故障信息包含仿真时间及发生阶段。
-- `mpc_status`、`wbc_status`、`*_violation` 和 `*_ms` 保存最近一次求解的诊断。CSV 按 50 Hz 采样，MPC 的结果在两次更新之间会重复。接触力诊断来自基于该帧状态、更新电机命令前的 MuJoCo 前向计算。
+- `mpc_status`、`wbc_status`、`*_violation` 和 `*_ms` 保存最近一次求解的诊断。CSV 按 50 Hz 采样，MPC 的结果在两次更新之间会重复。接触力诊断来自更新电机命令前的 MuJoCo 前向计算。
+- WBC 求解失败时，例如遇到 `maximum iterations reached`，程序会把本帧的支撑脚跟踪改为加权目标，重试一次。重试保留动力学、摩擦、关节位置与速度、力矩限制。`wbc_stance_retries` 是成功重试的累计次数，`wbc_status` 显示最后一次求解的状态。
 - 改参数时可以先复制 [default.toml](src/bpx_mpc/data/default.toml) 到本地文件，再用 `--config 路径.toml` 指定。先把起身和零速站立跑顺，再分别调整摆腿抬脚高度、运动指令上限、MPC 权重与 WBC 任务权重。
 
 ## 运行验证与适用边界
@@ -120,4 +133,4 @@ flowchart LR
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
 ```
 
-回归测试覆盖趴姿等待、摆腿轨迹端点、模拟 Linux 手柄事件、闭环场景及关节力矩和摩擦约束。当前参数面向平地、低速教学。MPC 采用小倾角单刚体模型及固定步态，脚底采用近似点接触。突然失去接触、大扰动、激进组合指令以及复杂地形可能导致任务不可行。遇到求解失败或判定跌倒时，程序记录阶段并结束仿真。该工程使用 MuJoCo 真值状态，桌面窗口与实体手柄有待在桌面会话中验证。
+回归测试覆盖趴姿等待、摆腿轨迹端点、模拟 Linux 手柄事件、平地与起伏地形闭环场景、关节力矩与摩擦约束，以及 WBC 达到迭代上限后的重试。当前参数面向平地和小幅起伏的低速仿真。MPC 采用小倾角单刚体模型及固定步态，脚底采用近似点接触。突然失去接触、大扰动、激进组合指令以及复杂地形可能导致任务不可行。MPC 求解失败、WBC 重试后仍失败或检测到跌倒时，程序报告仿真时间与阶段并退出。该工程使用 MuJoCo 真值状态。本机已验证桌面窗口模式，实体手柄有待接入验证。

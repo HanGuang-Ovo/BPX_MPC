@@ -3,7 +3,7 @@
   <compiler angle="radian" meshdir="meshes" autolimits="true" />
   <asset>
     <texture name="grid" type="2d" builtin="checker" rgb1="0.18 0.18 0.18" rgb2="0.28 0.28 0.28" width="512" height="512" />
-    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.05" />
+    <material name="grid_mat" texture="grid" texrepeat="1.25 1.25" texuniform="true" reflectance="0.05" />
     <mesh name="mesh_0" file="torso_0.obj" />
     <material name="mat_torso__005_1_1_1_1" rgba="1 1 1 1" specular="0.35" shininess="0.4" />
     <mesh name="mesh_1" file="torso_1.obj" />
@@ -31,7 +31,7 @@
   </asset>
   <worldbody>
     <light name="sun" pos="1.5 -1.5 2.5" dir="-0.4 0.4 -1" directional="true" diffuse="0.9 0.9 0.9" specular="0.2 0.2 0.2" />
-    <geom name="floor" type="plane" size="3 3 0.1" material="grid_mat" />
+    <geom name="floor" type="plane" size="0 0 0.1" material="grid_mat" />
     <body name="torso" pos="0 0 0.42">
       <inertial mass="6.829" pos="0.0151448 0.0033341 -0.0031076" fullinertia="0.0291671 0.1285119 0.1380718 0.0019891 0.0003146 8.12e-05" />
       <geom name="torso_collision_0" group="3" type="box" size="0.1706 0.08 0.0791" />

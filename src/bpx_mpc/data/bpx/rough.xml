@@ -1,0 +1,10 @@
+<mujoco model="bpx_rough">
+  <include file="bpx.xml" />
+  <asset>
+    <!-- terrain.py 按世界坐标填充样本。48 个间隔正好分为三段。 -->
+    <hfield name="rough_hills" size="3.6 3.6 0.13 0.06" nrow="49" ncol="49" />
+  </asset>
+  <worldbody>
+    <geom name="rough_ground" type="hfield" hfield="rough_hills" pos="0 0 -0.004" material="grid_mat" />
+  </worldbody>
+</mujoco>

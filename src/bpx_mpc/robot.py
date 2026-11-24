@@ -8,9 +8,11 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 from .config import DATA
+from .terrain import RoughTerrain
 
 LEGS = ("fl", "fr", "hl", "hr")
 JOINTS = tuple(f"{leg}_{joint}_joint" for leg in LEGS for joint in ("hip_roll", "hip_pitch", "knee"))
+SCENES = {"flat": "bpx.xml", "rough": "rough.xml"}
 
 
 @dataclass
@@ -27,9 +29,9 @@ class State:
 
 
 class Robot:
-    def __init__(self, cfg):
+    def __init__(self, cfg, terrain="flat"):
         self.cfg = cfg
-        self.model = mujoco.MjModel.from_xml_path(str(DATA / "bpx/bpx.xml"))
+        self.model = mujoco.MjModel.from_xml_path(str(DATA / "bpx" / SCENES[terrain]))
         self.data = mujoco.MjData(self.model)
         m = self.model
         m.opt.timestep = cfg["simulation"]["timestep"]
@@ -43,6 +45,13 @@ class Robot:
         self.sites = [self.id(mujoco.mjtObj.mjOBJ_SITE, leg + "_foot") for leg in LEGS]
         self.toes = [self.id(mujoco.mjtObj.mjOBJ_BODY, leg + "_toe_link") for leg in LEGS]
         self.floor = self.id(mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self.rough_ground = None
+        self.terrain = None
+        self.ground_geoms = {self.floor}
+        if terrain == "rough":
+            self.rough_ground = self.id(mujoco.mjtObj.mjOBJ_GEOM, "rough_ground")
+            self.terrain = RoughTerrain(m, self.rough_ground)
+            self.ground_geoms.add(self.rough_ground)
         if m.nv != 18 or m.nq != 19 or m.nu != 12:
             raise ValueError("要求 6 自由度浮动基座 + 12 个单自由度关节")
         self.mass = float(mujoco.mj_getTotalmass(m))
@@ -58,6 +67,9 @@ class Robot:
 
     def reset(self):
         mujoco.mj_resetData(self.model, self.data)
+        if self.terrain is not None:
+            self.terrain.tile.fill(0)
+            self.terrain.update()
         self.data.qpos[:3] = [0., 0., self.cfg["robot"]["lying_height"]]
         self.data.qpos[3:7] = [1., 0., 0., 0.]
         self.data.qpos[self.qadr] = np.tile(self.cfg["robot"]["lying_angles"], 4)
@@ -66,6 +78,20 @@ class Robot:
     def forward(self):
         # mj_step 积分后的派生量可能仍对应上一个状态；控制前显式更新。
         mujoco.mj_forward(self.model, self.data)
+
+    def ground_height(self, x, y):
+        """沿竖直方向查询足底下方的可碰撞地表高度。"""
+        if self.rough_ground is None:
+            return 0.
+        origin = np.array([x, y, 1.])
+        down = np.array([0., 0., -1.])
+        distance = mujoco.mj_rayHfield(self.model, self.data, self.rough_ground, origin, down)
+        return max(0., origin[2]-distance) if distance >= 0. else 0.
+
+    def world_position(self, position):
+        if self.terrain is None:
+            return position
+        return position + np.r_[self.terrain.origin, 0.]
 
     def jacobians(self):
         jac, dots = [], []
@@ -125,9 +151,10 @@ class Robot:
         forces = np.zeros((4, 3))
         for idx, c in enumerate(self.data.contact):
             g1, g2 = int(c.geom1), int(c.geom2)
-            if self.floor not in (g1, g2):
+            ground_first = g1 in self.ground_geoms
+            if not ground_first and g2 not in self.ground_geoms:
                 continue
-            other = g2 if g1 == self.floor else g1
+            other = g2 if ground_first else g1
             body = int(self.model.geom_bodyid[other])
             if body not in self.toes:
                 continue
@@ -135,7 +162,7 @@ class Robot:
             # contact 的局部第一轴是法线；力作用在 geom2，需根据顺序翻转。
             mujoco.mj_contactForce(self.model, self.data, idx, f)
             fw = c.frame.reshape(3, 3).T @ f[:3]
-            forces[self.toes.index(body)] += fw if g1 == self.floor else -fw
+            forces[self.toes.index(body)] += fw if ground_first else -fw
         return forces
 
     def apply(self, torque):

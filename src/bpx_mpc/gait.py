@@ -35,8 +35,9 @@ def swing_trajectory(start, end, phase, duration, height):
 class GaitPlanner:
     offsets = np.array([0., .5, .5, 0.])  # FL+HR 与 FR+HL 两组对角腿
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, ground_height=None):
         self.cfg = cfg
+        self.ground_height = ground_height
         self.walking = False
         self.stopping = False
         self.started = 0.
@@ -52,6 +53,11 @@ class GaitPlanner:
         # 站姿足端相对机身的水平偏置，用于左右/前后对称的落足参考。
         self.nominal = (state.feet-state.position) @ state.rotation
         self.nominal[:, 2] = 0.
+
+    def shift_origin(self, delta):
+        self.anchors[:, :2] -= delta
+        self.start[:, :2] -= delta
+        self.end[:, :2] -= delta
 
     def phase(self, now):
         return ((now-self.started)/self.cfg["gait"]["period"] + self.offsets) % 1.
@@ -93,6 +99,8 @@ class GaitPlanner:
                 delta[:2] = np.clip(delta[:2], -c["max_step"], c["max_step"])
                 self.end[leg] = state.position + hip + delta
                 self.end[leg, 2] = self.cfg["robot"]["foot_radius"]
+                if self.ground_height is not None:
+                    self.end[leg, 2] += self.ground_height(*self.end[leg, :2])
             elif not self.last_contact[leg] and contact[leg]:
                 self.anchors[leg] = self.end[leg]
             if contact[leg]:

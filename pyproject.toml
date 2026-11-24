@@ -20,7 +20,7 @@ where = ["src"]
 namespaces = false
 
 [tool.setuptools.package-data]
-bpx_mpc = ["data/default.toml", "data/bpx/bpx.xml", "data/bpx/LICENSE", "data/bpx/meshes/*.obj"]
+bpx_mpc = ["data/default.toml", "data/bpx/*.xml", "data/bpx/LICENSE", "data/bpx/meshes/*.obj"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

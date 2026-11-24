@@ -22,10 +22,10 @@ class Mode(StrEnum):
 
 
 class Controller:
-    def __init__(self, cfg):
+    def __init__(self, cfg, terrain="flat"):
         self.cfg = cfg
-        self.robot = Robot(cfg)
-        self.gait = GaitPlanner(cfg)
+        self.robot = Robot(cfg, terrain=terrain)
+        self.gait = GaitPlanner(cfg, self.robot.ground_height)
         self.mpc = ConvexMPC(cfg, self.robot.mass)
         self.wbc = WholeBodyController(cfg, self.robot)
         rise = cfg["init"]
@@ -46,6 +46,14 @@ class Controller:
         self.yaw_ref = 0.
         self.force_ref = np.zeros((4, 3))
         self.targets = None
+
+    def shift_origin(self, tiles):
+        delta = self.robot.terrain.move(tiles)
+        self.robot.data.qpos[:2] -= delta
+        if self.base_ref is not None:
+            self.base_ref[:2] -= delta
+            self.gait.shift_origin(delta)
+        return delta
 
     def update(self, now, state, raw_command, trigger=False):
         robot, rise = self.robot, self.cfg["init"]
@@ -115,7 +123,8 @@ class Controller:
         velocity_world = yaw_rotation(self.yaw_ref) @ np.r_[cmd[:2], 0.]
         self.base_ref[:2] += dt*velocity_world[:2]
         self.base_ref[:2] = state.position[:2] + np.clip(self.base_ref[:2]-state.position[:2], -.12, .12)
-        self.base_ref[2] += np.clip(self.cfg["robot"]["body_height"]-self.base_ref[2], -.12*dt, .12*dt)
+        height_ref = self.cfg["robot"]["body_height"] + robot.ground_height(*state.position[:2])
+        self.base_ref[2] += np.clip(height_ref-self.base_ref[2], -.12*dt, .12*dt)
         yaw_error = (self.yaw_ref-state.rpy[2]+np.pi) % (2*np.pi)-np.pi
         self.yaw_ref = state.rpy[2]+np.clip(yaw_error+dt*cmd[2], -.35, .35)
 

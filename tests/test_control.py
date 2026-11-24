@@ -9,12 +9,13 @@ import pytest
 from bpx_mpc.cli import parser, run
 from bpx_mpc.config import load_config
 from bpx_mpc.controller import Controller, Mode
-from bpx_mpc.gait import swing_trajectory
+from bpx_mpc.gait import FootTargets, swing_trajectory
 from bpx_mpc.gamepad import (
     ABS_RX, ABS_X, ABS_Y, BTN_TL, BTN_TR, EVENT_STRUCT, EV_ABS, EV_KEY,
     AxisCalibration, GamepadCommandSource, InputDevice,
 )
 from bpx_mpc.mpc import discrete_dynamics
+from bpx_mpc.qp import QPFailure
 from bpx_mpc.robot import JOINTS, LEGS
 
 
@@ -44,6 +45,35 @@ def test_swing_endpoints():
         np.testing.assert_allclose(acceleration, 0.)
     middle, _, _ = swing_trajectory(start, finish, .5, .24, .06)
     assert middle[2] == pytest.approx(.087)
+
+
+def test_wbc_retries_after_iteration_limit(monkeypatch):
+    cfg = load_config()
+    controller = Controller(cfg, terrain="rough")
+    robot, wbc = controller.robot, controller.wbc
+    robot.data.qpos[2] = cfg["robot"]["body_height"]
+    robot.data.qpos[robot.qadr] = robot.nominal_q
+    robot.forward()
+    state = robot.state()
+    targets = FootTargets(np.ones(4, dtype=bool), state.feet, np.zeros((4, 3)), np.zeros((4, 3)))
+    forces = np.tile([0., 0., robot.mass*9.81/4], (4, 1))
+    solve = wbc.qp.solve
+    attempts = []
+
+    def fail_first(P, q, A, lower, upper):
+        constraints = np.column_stack((A.toarray(), lower, upper))
+        attempts.append(constraints)
+        if len(attempts) == 1:
+            raise QPFailure("WBC: maximum iterations reached")
+        return solve(P, q, A, lower, upper)
+
+    monkeypatch.setattr(wbc.qp, "solve", fail_first)
+    torque = wbc.solve(state, targets, state.position, np.zeros(3), 0., 0., forces)
+    strict, relaxed = attempts
+    np.testing.assert_array_equal(relaxed, np.vstack((strict[:18], strict[30:])))
+    assert wbc.stance_retries == 1
+    assert wbc.qp.info.violation < .02
+    assert np.max(np.abs(torque)) <= robot.torque_limit
 
 
 def test_linux_gamepad_axes_and_button_edges():
@@ -114,3 +144,41 @@ def test_closed_loop(command, tmp_path):
     # 检查末帧的真实支撑力和电机力矩方向能平衡重力。
     normal = sum(float(rows[-1][f"{leg}_actual_fz"]) for leg in LEGS)
     assert normal == pytest.approx(c.robot.mass*9.81, rel=.05)
+
+
+def test_rough_terrain_closed_loop(tmp_path):
+    log = tmp_path / "rough.csv"
+    args = parser().parse_args(["--terrain", "rough", "--duration", "22", "--vx", "0.25", "--stop-at", "18",
+                               "--log", str(log)])
+    cfg = load_config()
+    controller = run(cfg, args)
+    robot = controller.robot
+    x, _, z = robot.world_position(robot.data.qpos[:3])
+
+    assert x > 2.8
+    assert robot.terrain.tile[0] > 0
+    ground = robot.ground_height(*robot.data.qpos[:2])
+    assert ground > .03
+    assert controller.mode == Mode.STAND
+    assert z == pytest.approx(cfg["robot"]["body_height"] + ground, abs=.015)
+    assert any(robot.rough_ground in contact.geom for contact in robot.data.contact)
+    assert np.all(robot.contacts()[:, 2] > 2.)
+    with log.open() as stream:
+        x_log = [float(row["x"]) for row in csv.DictReader(stream)]
+    assert x_log[-1] == pytest.approx(x, abs=.01)
+    assert np.max(np.abs(np.diff(x_log))) < .05
+
+
+def test_rough_terrain_overlap():
+    controller = Controller(load_config(), terrain="rough")
+    robot = controller.robot
+    assert robot.ground_height(0., 0.) == 0.
+    assert robot.ground_height(2.1, 1.8) == 0.
+    assert robot.ground_height(2.1, 0.) > .10
+    controller.shift_origin(np.array([100, -100]))
+    points = np.array([[.92, -.20], [1.1, -.22], [1.31, 0.], [1.5, .12]])
+    before = [robot.ground_height(*p) for p in points]
+    assert max(before) - min(before) > .04
+    delta = controller.shift_origin(np.array([1, -1]))
+    after = [robot.ground_height(*(p-delta)) for p in points]
+    np.testing.assert_allclose(before, after, rtol=0., atol=1e-7)

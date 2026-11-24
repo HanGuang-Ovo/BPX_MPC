@@ -1,6 +1,7 @@
-name: bpx-mpc
+name: mojoco
 channels:
-  - defaults
+  - conda-forge
+  - nodefaults
 dependencies:
   - python=3.11
   - pip

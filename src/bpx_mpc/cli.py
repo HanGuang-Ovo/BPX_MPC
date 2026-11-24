@@ -1,9 +1,11 @@
 """运行入口。命令源只生成速度和起身事件，控制器与输入设备解耦。"""
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 import csv
+from itertools import count
 from pathlib import Path
 import sys
+import threading
 import time
 
 import mujoco
@@ -13,13 +15,14 @@ from .config import load_config
 from .controller import Controller, Mode
 from .gamepad import BTN_TL, BTN_TR, GamepadCommandSource, GamepadMapping, enumerate_gamepads, select_gamepad
 from .qp import QPFailure
-from .robot import JOINTS, LEGS
+from .robot import JOINTS, LEGS, SCENES
 
 
 def parser():
     p = argparse.ArgumentParser(description="BPX MuJoCo 足式控制仿真")
     p.add_argument("--config", type=Path)
-    p.add_argument("--duration", type=float, default=16.)
+    p.add_argument("--terrain", choices=SCENES, default="flat", help="地形：flat 平地（默认），rough 平地中分布丘包")
+    p.add_argument("--duration", type=float, default=16., help="仿真时长（秒），inf 表示持续运行")
     p.add_argument("--viewer", action="store_true", help="打开 MuJoCo 窗口并按墙钟播放")
     p.add_argument("--gamepad", action="store_true", help="用手柄控制，RB 触发起身")
     p.add_argument("--list-gamepads", action="store_true")
@@ -43,7 +46,7 @@ def log_row(controller, now, state, raw):
     c = controller
     body_v = state.rotation.T @ state.velocity
     row = {"time": now, "mode": c.mode.value, "init_progress": c.rise.progress,
-           **dict(zip(("x", "y", "height"), state.position)),
+           **dict(zip(("x", "y", "height"), c.robot.world_position(state.position))),
            **dict(zip(("roll", "pitch", "yaw"), state.rpy)),
            "vx": body_v[0], "vy": body_v[1], "wz": state.omega[2]}
     for i, name in enumerate(("vx", "vy", "wz")):
@@ -62,11 +65,12 @@ def log_row(controller, now, state, raw):
         row[name+"_status"] = qp.info.status
         row[name+"_ms"] = qp.info.seconds*1000
         row[name+"_violation"] = qp.info.violation
+    row["wbc_stance_retries"] = c.wbc.stance_retries
     return row
 
 
 def run(cfg, args):
-    controller = Controller(cfg)
+    controller = Controller(cfg, terrain=args.terrain)
     robot = controller.robot
     dt = cfg["simulation"]["timestep"]
     control_stride = round(cfg["simulation"]["control_dt"]/dt)
@@ -87,7 +91,14 @@ def run(cfg, args):
         viewer = None
         if args.viewer:
             from mujoco.viewer import launch_passive
-            viewer = stack.enter_context(launch_passive(robot.model, robot.data))
+            existing_threads = set(threading.enumerate())
+            viewer = launch_passive(robot.model, robot.data)
+            # MuJoCo 3.13 signals the render thread on close. Wait for it before
+            # GLFW teardown at interpreter exit (MuJoCo issue #3923).
+            for thread in set(threading.enumerate()) - existing_threads:
+                if thread.name.endswith("(_launch_internal)"):
+                    stack.callback(thread.join)
+            stack.enter_context(viewer)
             with viewer.lock():
                 viewer.cam.trackbodyid = robot.base
                 viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
@@ -98,15 +109,25 @@ def run(cfg, args):
             args.log.parent.mkdir(parents=True, exist_ok=True)
             stream = stack.enter_context(args.log.open("w", newline="", encoding="utf-8"))
         start_wall = time.monotonic()
-        nsteps = round(args.duration/dt)
-        for step in range(nsteps):
+        steps = count() if np.isposinf(args.duration) else range(round(args.duration/dt))
+        for step in steps:
             now = step*dt
             if viewer and not viewer.is_running():
                 break
-            if step % control_stride == 0 or (stream and step % log_stride == 0):
+            control_step = step % control_stride == 0
+            if control_step and robot.terrain is not None:
+                tiles = robot.terrain.offset_tiles(robot.data.qpos[:2])
+                if tiles.any():
+                    with viewer.lock() if viewer else nullcontext():
+                        delta = controller.shift_origin(tiles)
+                        if viewer:
+                            viewer.cam.lookat[:2] -= delta
+                    if viewer:
+                        viewer.update_hfield(robot.terrain.asset)
+            if control_step or (stream and step % log_stride == 0):
                 robot.forward()
                 state = robot.state()
-            if step % control_stride == 0:
+            if control_step:
                 if gamepad:
                     try:
                         raw = gamepad.read()
@@ -143,7 +164,8 @@ def run(cfg, args):
                 if delay > 0:
                     time.sleep(delay)
         robot.forward()
-        print(f"仿真 {robot.data.time:.2f}s，机身位置 {np.round(robot.data.qpos[:3], 3)}", flush=True)
+        position = robot.world_position(robot.data.qpos[:3])
+        print(f"仿真 {robot.data.time:.2f}s，机身位置 {np.round(position, 3)}", flush=True)
     return controller
 
 
@@ -157,12 +179,12 @@ def main(argv=None):
         if not devices:
             print("未发现 Linux 游戏手柄")
         return 0
-    numbers = [args.duration, args.move_at, args.vx, args.vy, args.wz]
+    numbers = [args.move_at, args.vx, args.vy, args.wz]
     if args.stop_at is not None:
         numbers.append(args.stop_at)
-    if (not np.isfinite(numbers).all() or args.duration <= 0 or args.move_at < 0
+    if (not np.isfinite(numbers).all() or np.isnan(args.duration) or args.duration <= 0 or args.move_at < 0
             or (args.stop_at is not None and args.stop_at <= args.move_at)):
-        p.error("仿真时长、速度及起停时间必须为有效数值，且 stop-at 必须晚于 move-at")
+        p.error("仿真时长须为正数或 inf，速度和起停时间须为有限数值，且 stop-at 须晚于 move-at")
     try:
         run(load_config(args.config), args)
     except (RuntimeError, OSError, ValueError) as exc:

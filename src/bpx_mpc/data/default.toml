@@ -54,6 +54,7 @@ swing_kp = 300.0
 swing_kd = 30.0
 stance_kp = 100.0
 stance_kd = 20.0
+stance_weight = 30.0  # 仅用于支撑脚硬约束求解失败后的重试。
 body_weight = 10.0
 orientation_weight = 10.0
 swing_weight = 2.0
